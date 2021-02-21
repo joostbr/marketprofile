@@ -249,7 +249,7 @@ namespace NinjaTrader.NinjaScript.Indicators
 			{
 				Description									= @"Enter the description for your new custom Indicator here.";
 				Name										= "JBMarketProfileLevels";
-				Calculate									= Calculate.OnBarClose;
+				Calculate									= Calculate.OnEachTick;
 				IsOverlay									= true;
 				DisplayInDataBox							= true;
 				DrawOnPricePanel							= true;
@@ -266,10 +266,11 @@ namespace NinjaTrader.NinjaScript.Indicators
 				
 				ShowPOC = true;
 				ShowONPOC = true;
-				ShowVA   = true;
-				ShowONVA = true;
+				ShowVA   = false;
+				ShowONVA = false;
 				ShowHILO = true;
 				ShowONHILO = true;
+				ShowSettlement = true;
 				
 				HILOColor = Brushes.Red;
 				VAColor = Brushes.White;
@@ -278,6 +279,8 @@ namespace NinjaTrader.NinjaScript.Indicators
 				ONHILOColor = Brushes.Red;
 				ONVAColor = Brushes.White;
 				ONPOCColor = Brushes.Magenta;
+				
+				SettlementColor = Brushes.DarkOrange;
 				
 				Opacity = 100;
 				BrokenOpacity = 45;
@@ -320,8 +323,8 @@ namespace NinjaTrader.NinjaScript.Indicators
 				}
 				if (!Bars.IsTickReplay)
 				{
-					Draw.TextFixed(this, "NinjaScriptInfo", "JBMarketProfileLevels needs tick replay enabled on the data series when using delta", TextPosition.Center);
-					Log("JBMarketProfileLevels needs tick replay enabled on the data series when using delta", LogLevel.Error);
+					Draw.TextFixed(this, "NinjaScriptInfo", "JBMarketProfileLevels needs tick replay enabled on the data series", TextPosition.Center);
+					Log("JBMarketProfileLevels needs tick replay enabled on the data series", LogLevel.Error);
 					initDone = false;
 				}			
 				else {
@@ -337,8 +340,8 @@ namespace NinjaTrader.NinjaScript.Indicators
 				}
 				if (tpoProfile != null) {
 					update(tpoProfile);					
-				}
-				requestAndDrawSettlement(Time[0]);
+				}				
+				requestAndDrawSettlement(DateTime.Now);
 			}
 			else if (State == State.Realtime)
 			{				
@@ -460,31 +463,34 @@ namespace NinjaTrader.NinjaScript.Indicators
 			if (!initDone) {
 				return;
 			}
-			if (e.MarketDataType == MarketDataType.Settlement) {				
+			if (e.MarketDataType == MarketDataType.Settlement && BarsInProgress==0) {				
 				settlement = e.Price;
+				if (CurrentBars[0]>1) {
+					DrawSettlementRay("SETTLEM "+e.Time.ToString("MMM dd"), Times[0][1], settlement , Times[0][0], SettlementColor);
+				}
 				return;
 			}
 			
 			if(e.MarketDataType == MarketDataType.Last) {				
 				if (isStartOfNewSessionRTH()) {
-					Print(e.Time+" "+BarsInProgress+" "+BarsArray[RTH].IsFirstBarOfSession);
+					// Print(e.Time+" "+BarsInProgress+" "+BarsArray[RTH].IsFirstBarOfSession);
 					if (tpoProfile != null) {					
 						update(tpoProfile);
 						tpoProfiles.Add(tpoProfile);																
 					}
 					rthSessionIterator.GetNextSession(e.Time, false);
 					tpoProfile = new JBTPOProfile(RTH, rthSessionIterator.ActualSessionBegin, rthSessionIterator.ActualSessionEnd);
-					Print("SESSION - "+tpoProfile.sessionStart+" - "+tpoProfile.sessionEnd);
+					// Print("SESSION - "+tpoProfile.sessionStart+" - "+tpoProfile.sessionEnd);
 				}
 				if (isStartOfNewSessionETH()) {
-					Print(e.Time+" "+BarsInProgress+" "+BarsArray[ETH].IsFirstBarOfSession);
+					//Print(e.Time+" "+BarsInProgress+" "+BarsArray[ETH].IsFirstBarOfSession);
 					if (tpoProfile != null) {					
 						update(tpoProfile);
 						tpoProfiles.Add(tpoProfile);																
 					}
 					ethSessionIterator.GetNextSession(e.Time, false);
 					tpoProfile = new JBTPOProfile(ETH, ethSessionIterator.ActualSessionBegin, ethSessionIterator.ActualSessionEnd);
-					Print("SESSION - "+tpoProfile.sessionStart+" - "+tpoProfile.sessionEnd);
+					// Print("SESSION - "+tpoProfile.sessionStart+" - "+tpoProfile.sessionEnd);
 					
 				}
 				
@@ -497,8 +503,10 @@ namespace NinjaTrader.NinjaScript.Indicators
 					activeBarETH = CurrentBars[ETH];
 				}
 				if ((BarsInProgress == RTH || BarsInProgress == ETH) && tpoProfile != null) {
+					//Print(e.Time+" "+e.Price);
 					if (e.Time>=tpoProfile.sessionStart && e.Time<tpoProfile.sessionEnd) {
 						tpoProfile.add(e.Price, tpoId);
+						
 					}
 				}
 				else if (BarsInProgress == 0 && CurrentBars[0] != activeBar) {
@@ -537,10 +545,10 @@ namespace NinjaTrader.NinjaScript.Indicators
 			return ray;
 		}
 		
-		private LabeledRay DrawSettlementRay(String label, DateTime settleTime, double price, Brush color) {
+		private LabeledRay DrawSettlementRay(String label, DateTime settleTime, double price, DateTime to, Brush color) {
 			RemoveDrawObject(label);
 
-			LabeledRay ray = DrawLL.LabeledRay(this,  label, settleTime, price, DateTime.Now, price, color, LineStyle, LineWidth);
+			LabeledRay ray = DrawLL.LabeledRay(this,  label, settleTime, price, to, price, color, LineStyle, LineWidth);
 			
 			ray.DisplayText = label;
 			ray.Font = LabelFont;
@@ -554,28 +562,48 @@ namespace NinjaTrader.NinjaScript.Indicators
 		private void requestAndDrawSettlement(DateTime time) {
 		
 			
-		  DateTime previousEnd = TradingHours.String2TradingHours(RTHTemplate).GetPreviousTradingDayEnd(time);
-		
-		  BarsRequest barsRequest = new BarsRequest(BarsArray[0].Instrument, previousEnd.AddHours(-1), previousEnd);
-		 
-		
-		  barsRequest.BarsPeriod = new BarsPeriod { BarsPeriodType = BarsPeriodType.Day, Value = 1 };
-		
-		  barsRequest.Request(new Action<BarsRequest, ErrorCode, string>((bars, errorCode, errorMessage) =>
-		  {
-		    if (errorCode != ErrorCode.NoError)
-		    {
-		
-		      Print(string.Format("Error on requesting bars: {0}, {1}", errorCode, errorMessage));
-		      return;
-		    }
-		 
-		    if (bars.Bars.Count > 0) {
-				this.settlement = bars.Bars.GetClose(bars.Bars.Count-1);
-				DrawSettlementRay("SETTLEMENT", previousEnd, settlement ,Brushes.Yellow);
-			}		    		   
-		   
-		  }));
+			DateTime previousEnd = TradingHours.String2TradingHours(RTHTemplate).GetPreviousTradingDayEnd(time);
+			DateTime previousEnd2 = TradingHours.String2TradingHours(RTHTemplate).GetPreviousTradingDayEnd(previousEnd.AddMinutes(-1));
+		  	
+			//Print("PREVIOUS END "+time+" = "+previousEnd+" "+previousEnd2);
+		  	BarsRequest barsRequest = new BarsRequest(BarsArray[0].Instrument, previousEnd.AddDays(-2), previousEnd);
+		 		
+			barsRequest.BarsPeriod = new BarsPeriod { BarsPeriodType = BarsPeriodType.Day, Value = 1 };			
+			
+			DateTime time0 = Times[0][0];
+			DateTime time1 = Times[0][1];
+			barsRequest.Request(new Action<BarsRequest, ErrorCode, string>((bars, errorCode, errorMessage) =>
+			{
+				if (errorCode != ErrorCode.NoError)
+			    {			
+			    	//Print(string.Format("Error on requesting bars: {0}, {1}", errorCode, errorMessage));
+					Log("JBMarketProfileLevels could not load settled bars", LogLevel.Error);
+			      	return;
+			    }
+			 		
+				double settlement2 = 0;
+			    if (bars.Bars.Count > 0) {
+					for (int i=bars.Bars.Count-1; i>=0; i--) {
+						if (DateTime.Compare(bars.Bars.GetTime(i), previousEnd2)<=0) {
+							settlement2 = bars.Bars.GetClose(i);				
+							break;
+						}
+						else if (DateTime.Compare(bars.Bars.GetTime(i), previousEnd)<=0) {
+							this.settlement = bars.Bars.GetClose(i);				
+						}
+					}
+					if (DateTime.Compare(time0, previousEnd)<=0) {
+						DrawSettlementRay("SETTLEM "+previousEnd.ToString("MMM dd"), time1, settlement , time, SettlementColor);
+					}
+					else {
+						DrawSettlementRay("SETTLEM "+previousEnd.ToString("MMM dd"), previousEnd, settlement , time, SettlementColor);
+					}
+					if (settlement2 > 0) {					
+						DrawSettlementRay("SETTLEM "+previousEnd2.ToString("MMM dd"), previousEnd2, settlement2 , time, SettlementColor);					
+					}
+				}		    		   
+			   
+			  }));
 		}
 		
 	
@@ -709,7 +737,26 @@ namespace NinjaTrader.NinjaScript.Indicators
         }
 		
 		[NinjaScriptProperty]
-		[Display(Name = "Label Font", Description = "Level label font", Order = 15, GroupName = "Parameters")]
+        [XmlIgnore]
+        [Display(Name = "Show Settlement (beta)", Description = "Show previous settlement price", Order = 15, GroupName = "Parameters")]
+        public bool ShowSettlement
+        { get; set; }
+		
+		[NinjaScriptProperty]
+        [XmlIgnore]
+        [Display(Name = "Settlement Color", Description = "Line color for the previous settlement price", Order = 16, GroupName = "Parameters")]
+        public SolidColorBrush SettlementColor
+        { get; set; }
+
+        [Browsable(false)]
+        public string SettelementColorSerializable
+        {
+            get { return Serialize.BrushToString(SettlementColor); }
+            set { SettlementColor = (SolidColorBrush)Serialize.StringToBrush(value); }
+        }
+		
+		[NinjaScriptProperty]
+		[Display(Name = "Label Font", Description = "Level label font", Order = 17, GroupName = "Parameters")]
 		public NinjaTrader.Gui.Tools.SimpleFont LabelFont
 		{
 			get; set;
@@ -717,28 +764,28 @@ namespace NinjaTrader.NinjaScript.Indicators
 		
 		[Range(1, int.MaxValue)]
         [NinjaScriptProperty]
-        [Display(Name = "Line width", Description = "Line width for levels", Order = 16, GroupName = "Parameters")]
+        [Display(Name = "Line width", Description = "Line width for levels", Order = 18, GroupName = "Parameters")]
         public int LineWidth
         {
             get; set;
         }
 
         [NinjaScriptProperty]
-        [Display(Name = "Line style", Description = "Line style for levels", Order = 17, GroupName = "Parameters")]
+        [Display(Name = "Line style", Description = "Line style for levels", Order = 19, GroupName = "Parameters")]
         public DashStyleHelper LineStyle
         {
             get; set;
         }
 		
 		[NinjaScriptProperty]
-        [Display(Name = "RTH Trading Hours", Description = "Regular trading hours template (cfr Tools/TradingHours)", Order = 18, GroupName = "Parameters")]
+        [Display(Name = "RTH Trading Hours", Description = "Regular trading hours template (cfr Tools/TradingHours)", Order = 20, GroupName = "Parameters")]
         public String RTHTemplate
         {
             get; set;
         }
 		
 		[NinjaScriptProperty]
-        [Display(Name = "ON Trading Hours", Description = "Overnight trading hours template (cfr Tools/TradingHours)", Order = 19, GroupName = "Parameters")]
+        [Display(Name = "ON Trading Hours", Description = "Overnight trading hours template (cfr Tools/TradingHours)", Order = 21, GroupName = "Parameters")]
         public String ONTemplate
         {
             get; set;
@@ -758,18 +805,18 @@ namespace NinjaTrader.NinjaScript.Indicators
 	public partial class Indicator : NinjaTrader.Gui.NinjaScript.IndicatorRenderBase
 	{
 		private JBMarketProfileLevels[] cacheJBMarketProfileLevels;
-		public JBMarketProfileLevels JBMarketProfileLevels(int opacity, int brokenOpacity, bool showPOC, SolidColorBrush pOCColor, bool showHILO, SolidColorBrush hILOColor, bool showVA, SolidColorBrush vAColor, bool showONPOC, SolidColorBrush oNPOCColor, bool showONHILO, SolidColorBrush oNHILOColor, bool showONVA, SolidColorBrush oNVAColor, NinjaTrader.Gui.Tools.SimpleFont labelFont, int lineWidth, DashStyleHelper lineStyle, String rTHTemplate, String oNTemplate)
+		public JBMarketProfileLevels JBMarketProfileLevels(int opacity, int brokenOpacity, bool showPOC, SolidColorBrush pOCColor, bool showHILO, SolidColorBrush hILOColor, bool showVA, SolidColorBrush vAColor, bool showONPOC, SolidColorBrush oNPOCColor, bool showONHILO, SolidColorBrush oNHILOColor, bool showONVA, SolidColorBrush oNVAColor, bool showSettlement, SolidColorBrush settlementColor, NinjaTrader.Gui.Tools.SimpleFont labelFont, int lineWidth, DashStyleHelper lineStyle, String rTHTemplate, String oNTemplate)
 		{
-			return JBMarketProfileLevels(Input, opacity, brokenOpacity, showPOC, pOCColor, showHILO, hILOColor, showVA, vAColor, showONPOC, oNPOCColor, showONHILO, oNHILOColor, showONVA, oNVAColor, labelFont, lineWidth, lineStyle, rTHTemplate, oNTemplate);
+			return JBMarketProfileLevels(Input, opacity, brokenOpacity, showPOC, pOCColor, showHILO, hILOColor, showVA, vAColor, showONPOC, oNPOCColor, showONHILO, oNHILOColor, showONVA, oNVAColor, showSettlement, settlementColor, labelFont, lineWidth, lineStyle, rTHTemplate, oNTemplate);
 		}
 
-		public JBMarketProfileLevels JBMarketProfileLevels(ISeries<double> input, int opacity, int brokenOpacity, bool showPOC, SolidColorBrush pOCColor, bool showHILO, SolidColorBrush hILOColor, bool showVA, SolidColorBrush vAColor, bool showONPOC, SolidColorBrush oNPOCColor, bool showONHILO, SolidColorBrush oNHILOColor, bool showONVA, SolidColorBrush oNVAColor, NinjaTrader.Gui.Tools.SimpleFont labelFont, int lineWidth, DashStyleHelper lineStyle, String rTHTemplate, String oNTemplate)
+		public JBMarketProfileLevels JBMarketProfileLevels(ISeries<double> input, int opacity, int brokenOpacity, bool showPOC, SolidColorBrush pOCColor, bool showHILO, SolidColorBrush hILOColor, bool showVA, SolidColorBrush vAColor, bool showONPOC, SolidColorBrush oNPOCColor, bool showONHILO, SolidColorBrush oNHILOColor, bool showONVA, SolidColorBrush oNVAColor, bool showSettlement, SolidColorBrush settlementColor, NinjaTrader.Gui.Tools.SimpleFont labelFont, int lineWidth, DashStyleHelper lineStyle, String rTHTemplate, String oNTemplate)
 		{
 			if (cacheJBMarketProfileLevels != null)
 				for (int idx = 0; idx < cacheJBMarketProfileLevels.Length; idx++)
-					if (cacheJBMarketProfileLevels[idx] != null && cacheJBMarketProfileLevels[idx].Opacity == opacity && cacheJBMarketProfileLevels[idx].BrokenOpacity == brokenOpacity && cacheJBMarketProfileLevels[idx].ShowPOC == showPOC && cacheJBMarketProfileLevels[idx].POCColor == pOCColor && cacheJBMarketProfileLevels[idx].ShowHILO == showHILO && cacheJBMarketProfileLevels[idx].HILOColor == hILOColor && cacheJBMarketProfileLevels[idx].ShowVA == showVA && cacheJBMarketProfileLevels[idx].VAColor == vAColor && cacheJBMarketProfileLevels[idx].ShowONPOC == showONPOC && cacheJBMarketProfileLevels[idx].ONPOCColor == oNPOCColor && cacheJBMarketProfileLevels[idx].ShowONHILO == showONHILO && cacheJBMarketProfileLevels[idx].ONHILOColor == oNHILOColor && cacheJBMarketProfileLevels[idx].ShowONVA == showONVA && cacheJBMarketProfileLevels[idx].ONVAColor == oNVAColor && cacheJBMarketProfileLevels[idx].LabelFont == labelFont && cacheJBMarketProfileLevels[idx].LineWidth == lineWidth && cacheJBMarketProfileLevels[idx].LineStyle == lineStyle && cacheJBMarketProfileLevels[idx].RTHTemplate == rTHTemplate && cacheJBMarketProfileLevels[idx].ONTemplate == oNTemplate && cacheJBMarketProfileLevels[idx].EqualsInput(input))
+					if (cacheJBMarketProfileLevels[idx] != null && cacheJBMarketProfileLevels[idx].Opacity == opacity && cacheJBMarketProfileLevels[idx].BrokenOpacity == brokenOpacity && cacheJBMarketProfileLevels[idx].ShowPOC == showPOC && cacheJBMarketProfileLevels[idx].POCColor == pOCColor && cacheJBMarketProfileLevels[idx].ShowHILO == showHILO && cacheJBMarketProfileLevels[idx].HILOColor == hILOColor && cacheJBMarketProfileLevels[idx].ShowVA == showVA && cacheJBMarketProfileLevels[idx].VAColor == vAColor && cacheJBMarketProfileLevels[idx].ShowONPOC == showONPOC && cacheJBMarketProfileLevels[idx].ONPOCColor == oNPOCColor && cacheJBMarketProfileLevels[idx].ShowONHILO == showONHILO && cacheJBMarketProfileLevels[idx].ONHILOColor == oNHILOColor && cacheJBMarketProfileLevels[idx].ShowONVA == showONVA && cacheJBMarketProfileLevels[idx].ONVAColor == oNVAColor && cacheJBMarketProfileLevels[idx].ShowSettlement == showSettlement && cacheJBMarketProfileLevels[idx].SettlementColor == settlementColor && cacheJBMarketProfileLevels[idx].LabelFont == labelFont && cacheJBMarketProfileLevels[idx].LineWidth == lineWidth && cacheJBMarketProfileLevels[idx].LineStyle == lineStyle && cacheJBMarketProfileLevels[idx].RTHTemplate == rTHTemplate && cacheJBMarketProfileLevels[idx].ONTemplate == oNTemplate && cacheJBMarketProfileLevels[idx].EqualsInput(input))
 						return cacheJBMarketProfileLevels[idx];
-			return CacheIndicator<JBMarketProfileLevels>(new JBMarketProfileLevels(){ Opacity = opacity, BrokenOpacity = brokenOpacity, ShowPOC = showPOC, POCColor = pOCColor, ShowHILO = showHILO, HILOColor = hILOColor, ShowVA = showVA, VAColor = vAColor, ShowONPOC = showONPOC, ONPOCColor = oNPOCColor, ShowONHILO = showONHILO, ONHILOColor = oNHILOColor, ShowONVA = showONVA, ONVAColor = oNVAColor, LabelFont = labelFont, LineWidth = lineWidth, LineStyle = lineStyle, RTHTemplate = rTHTemplate, ONTemplate = oNTemplate }, input, ref cacheJBMarketProfileLevels);
+			return CacheIndicator<JBMarketProfileLevels>(new JBMarketProfileLevels(){ Opacity = opacity, BrokenOpacity = brokenOpacity, ShowPOC = showPOC, POCColor = pOCColor, ShowHILO = showHILO, HILOColor = hILOColor, ShowVA = showVA, VAColor = vAColor, ShowONPOC = showONPOC, ONPOCColor = oNPOCColor, ShowONHILO = showONHILO, ONHILOColor = oNHILOColor, ShowONVA = showONVA, ONVAColor = oNVAColor, ShowSettlement = showSettlement, SettlementColor = settlementColor, LabelFont = labelFont, LineWidth = lineWidth, LineStyle = lineStyle, RTHTemplate = rTHTemplate, ONTemplate = oNTemplate }, input, ref cacheJBMarketProfileLevels);
 		}
 	}
 }
@@ -778,14 +825,14 @@ namespace NinjaTrader.NinjaScript.MarketAnalyzerColumns
 {
 	public partial class MarketAnalyzerColumn : MarketAnalyzerColumnBase
 	{
-		public Indicators.JBMarketProfileLevels JBMarketProfileLevels(int opacity, int brokenOpacity, bool showPOC, SolidColorBrush pOCColor, bool showHILO, SolidColorBrush hILOColor, bool showVA, SolidColorBrush vAColor, bool showONPOC, SolidColorBrush oNPOCColor, bool showONHILO, SolidColorBrush oNHILOColor, bool showONVA, SolidColorBrush oNVAColor, NinjaTrader.Gui.Tools.SimpleFont labelFont, int lineWidth, DashStyleHelper lineStyle, String rTHTemplate, String oNTemplate)
+		public Indicators.JBMarketProfileLevels JBMarketProfileLevels(int opacity, int brokenOpacity, bool showPOC, SolidColorBrush pOCColor, bool showHILO, SolidColorBrush hILOColor, bool showVA, SolidColorBrush vAColor, bool showONPOC, SolidColorBrush oNPOCColor, bool showONHILO, SolidColorBrush oNHILOColor, bool showONVA, SolidColorBrush oNVAColor, bool showSettlement, SolidColorBrush settlementColor, NinjaTrader.Gui.Tools.SimpleFont labelFont, int lineWidth, DashStyleHelper lineStyle, String rTHTemplate, String oNTemplate)
 		{
-			return indicator.JBMarketProfileLevels(Input, opacity, brokenOpacity, showPOC, pOCColor, showHILO, hILOColor, showVA, vAColor, showONPOC, oNPOCColor, showONHILO, oNHILOColor, showONVA, oNVAColor, labelFont, lineWidth, lineStyle, rTHTemplate, oNTemplate);
+			return indicator.JBMarketProfileLevels(Input, opacity, brokenOpacity, showPOC, pOCColor, showHILO, hILOColor, showVA, vAColor, showONPOC, oNPOCColor, showONHILO, oNHILOColor, showONVA, oNVAColor, showSettlement, settlementColor, labelFont, lineWidth, lineStyle, rTHTemplate, oNTemplate);
 		}
 
-		public Indicators.JBMarketProfileLevels JBMarketProfileLevels(ISeries<double> input , int opacity, int brokenOpacity, bool showPOC, SolidColorBrush pOCColor, bool showHILO, SolidColorBrush hILOColor, bool showVA, SolidColorBrush vAColor, bool showONPOC, SolidColorBrush oNPOCColor, bool showONHILO, SolidColorBrush oNHILOColor, bool showONVA, SolidColorBrush oNVAColor, NinjaTrader.Gui.Tools.SimpleFont labelFont, int lineWidth, DashStyleHelper lineStyle, String rTHTemplate, String oNTemplate)
+		public Indicators.JBMarketProfileLevels JBMarketProfileLevels(ISeries<double> input , int opacity, int brokenOpacity, bool showPOC, SolidColorBrush pOCColor, bool showHILO, SolidColorBrush hILOColor, bool showVA, SolidColorBrush vAColor, bool showONPOC, SolidColorBrush oNPOCColor, bool showONHILO, SolidColorBrush oNHILOColor, bool showONVA, SolidColorBrush oNVAColor, bool showSettlement, SolidColorBrush settlementColor, NinjaTrader.Gui.Tools.SimpleFont labelFont, int lineWidth, DashStyleHelper lineStyle, String rTHTemplate, String oNTemplate)
 		{
-			return indicator.JBMarketProfileLevels(input, opacity, brokenOpacity, showPOC, pOCColor, showHILO, hILOColor, showVA, vAColor, showONPOC, oNPOCColor, showONHILO, oNHILOColor, showONVA, oNVAColor, labelFont, lineWidth, lineStyle, rTHTemplate, oNTemplate);
+			return indicator.JBMarketProfileLevels(input, opacity, brokenOpacity, showPOC, pOCColor, showHILO, hILOColor, showVA, vAColor, showONPOC, oNPOCColor, showONHILO, oNHILOColor, showONVA, oNVAColor, showSettlement, settlementColor, labelFont, lineWidth, lineStyle, rTHTemplate, oNTemplate);
 		}
 	}
 }
@@ -794,14 +841,14 @@ namespace NinjaTrader.NinjaScript.Strategies
 {
 	public partial class Strategy : NinjaTrader.Gui.NinjaScript.StrategyRenderBase
 	{
-		public Indicators.JBMarketProfileLevels JBMarketProfileLevels(int opacity, int brokenOpacity, bool showPOC, SolidColorBrush pOCColor, bool showHILO, SolidColorBrush hILOColor, bool showVA, SolidColorBrush vAColor, bool showONPOC, SolidColorBrush oNPOCColor, bool showONHILO, SolidColorBrush oNHILOColor, bool showONVA, SolidColorBrush oNVAColor, NinjaTrader.Gui.Tools.SimpleFont labelFont, int lineWidth, DashStyleHelper lineStyle, String rTHTemplate, String oNTemplate)
+		public Indicators.JBMarketProfileLevels JBMarketProfileLevels(int opacity, int brokenOpacity, bool showPOC, SolidColorBrush pOCColor, bool showHILO, SolidColorBrush hILOColor, bool showVA, SolidColorBrush vAColor, bool showONPOC, SolidColorBrush oNPOCColor, bool showONHILO, SolidColorBrush oNHILOColor, bool showONVA, SolidColorBrush oNVAColor, bool showSettlement, SolidColorBrush settlementColor, NinjaTrader.Gui.Tools.SimpleFont labelFont, int lineWidth, DashStyleHelper lineStyle, String rTHTemplate, String oNTemplate)
 		{
-			return indicator.JBMarketProfileLevels(Input, opacity, brokenOpacity, showPOC, pOCColor, showHILO, hILOColor, showVA, vAColor, showONPOC, oNPOCColor, showONHILO, oNHILOColor, showONVA, oNVAColor, labelFont, lineWidth, lineStyle, rTHTemplate, oNTemplate);
+			return indicator.JBMarketProfileLevels(Input, opacity, brokenOpacity, showPOC, pOCColor, showHILO, hILOColor, showVA, vAColor, showONPOC, oNPOCColor, showONHILO, oNHILOColor, showONVA, oNVAColor, showSettlement, settlementColor, labelFont, lineWidth, lineStyle, rTHTemplate, oNTemplate);
 		}
 
-		public Indicators.JBMarketProfileLevels JBMarketProfileLevels(ISeries<double> input , int opacity, int brokenOpacity, bool showPOC, SolidColorBrush pOCColor, bool showHILO, SolidColorBrush hILOColor, bool showVA, SolidColorBrush vAColor, bool showONPOC, SolidColorBrush oNPOCColor, bool showONHILO, SolidColorBrush oNHILOColor, bool showONVA, SolidColorBrush oNVAColor, NinjaTrader.Gui.Tools.SimpleFont labelFont, int lineWidth, DashStyleHelper lineStyle, String rTHTemplate, String oNTemplate)
+		public Indicators.JBMarketProfileLevels JBMarketProfileLevels(ISeries<double> input , int opacity, int brokenOpacity, bool showPOC, SolidColorBrush pOCColor, bool showHILO, SolidColorBrush hILOColor, bool showVA, SolidColorBrush vAColor, bool showONPOC, SolidColorBrush oNPOCColor, bool showONHILO, SolidColorBrush oNHILOColor, bool showONVA, SolidColorBrush oNVAColor, bool showSettlement, SolidColorBrush settlementColor, NinjaTrader.Gui.Tools.SimpleFont labelFont, int lineWidth, DashStyleHelper lineStyle, String rTHTemplate, String oNTemplate)
 		{
-			return indicator.JBMarketProfileLevels(input, opacity, brokenOpacity, showPOC, pOCColor, showHILO, hILOColor, showVA, vAColor, showONPOC, oNPOCColor, showONHILO, oNHILOColor, showONVA, oNVAColor, labelFont, lineWidth, lineStyle, rTHTemplate, oNTemplate);
+			return indicator.JBMarketProfileLevels(input, opacity, brokenOpacity, showPOC, pOCColor, showHILO, hILOColor, showVA, vAColor, showONPOC, oNPOCColor, showONHILO, oNHILOColor, showONVA, oNVAColor, showSettlement, settlementColor, labelFont, lineWidth, lineStyle, rTHTemplate, oNTemplate);
 		}
 	}
 }
